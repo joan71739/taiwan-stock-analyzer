@@ -13,13 +13,7 @@ FINMIND_API = "https://api.finmindtrade.com/api/v4/data"
 
 
 def _finmind_get(dataset: str, stock_id: str, start_date: str = None) -> list:
-    """
-    通用 FinMind API 查詢函式
-    dataset: 資料集名稱
-    stock_id: 股票代碼（例如 2330）
-    start_date: 起始日期（格式 2020-01-01）
-    回傳: list of dict
-    """
+    """通用 FinMind API 查詢函式"""
     if start_date is None:
         start_date = (datetime.now() - timedelta(days=365 * 2)).strftime("%Y-%m-%d")
 
@@ -46,33 +40,21 @@ def get_stock_data(stock_id: str) -> dict:
     """
     取得單一股票的所有財務指標
     stock_id: 台股代碼，例如 "2330"
-    回傳: 包含所有指標的字典，失敗時回傳 None
     """
     logger.info(f"開始抓取 {stock_id} 資料（FinMind）")
 
-    # 1. 取得公司基本資料
     info = _get_stock_info(stock_id)
     if not info:
         logger.error(f"找不到股票代碼: {stock_id}")
         return None
 
-    # 2. 取得最新股價與 PER、PBR
     price_data = _get_latest_price(stock_id)
     valuation = _get_valuation(stock_id)
-
-    # 3. 取得損益表資料（毛利率、淨利率、ROE、ROA）
     income_data = _get_income_statement(stock_id)
-
-    # 4. 取得資產負債表資料（負債比、流動比）
     balance_data = _get_balance_sheet(stock_id)
-
-    # 5. 取得現金流量資料
     cashflow_data = _get_cashflow(stock_id)
-
-    # 6. 取得營收趨勢
     revenue_trend = _get_revenue_trend(stock_id)
 
-    # 整理所有指標
     result = {
         "stock_id": stock_id,
         "company_name": info.get("company_name", f"股票{stock_id}"),
@@ -92,7 +74,6 @@ def get_stock_data(stock_id: str) -> dict:
         "revenue_trend": revenue_trend,
     }
 
-    # 7. 計算 Piotroski F-Score
     f_score_result = calc_f_score(result, balance_data, cashflow_data, income_data)
     result["f_score"] = f_score_result["total"]
     result["f_score_detail"] = f_score_result["detail"]
@@ -101,7 +82,7 @@ def get_stock_data(stock_id: str) -> dict:
 
 
 def _get_stock_info(stock_id: str) -> dict:
-    """取得公司基本資料（名稱、產業）"""
+    """取得公司基本資料"""
     try:
         resp = requests.get(
             FINMIND_API,
@@ -123,7 +104,7 @@ def _get_latest_price(stock_id: str) -> dict:
     rows = _finmind_get("TaiwanStockPrice", stock_id, start_date=start)
     if not rows:
         return {}
-    return rows[-1]  # 最新一筆
+    return rows[-1]
 
 
 def _get_valuation(stock_id: str) -> dict:
@@ -132,21 +113,18 @@ def _get_valuation(stock_id: str) -> dict:
     rows = _finmind_get("TaiwanStockPER", stock_id, start_date=start)
     if not rows:
         return {}
-    return rows[-1]  # 最新一筆
+    return rows[-1]
 
 
 def _get_income_statement(stock_id: str) -> dict:
-    """
-    從損益表取得財務指標
-    計算：毛利率、淨利率、ROE、ROA
-    """
+    """從損益表取得毛利率、淨利率"""
     start = (datetime.now() - timedelta(days=365 * 2)).strftime("%Y-%m-%d")
     rows = _finmind_get("TaiwanStockFinancialStatements", stock_id, start_date=start)
 
     if not rows:
         return {}
 
-    # 依日期分組，取最新一期的所有欄位
+    # 依日期分組，取最新一期
     by_date = {}
     for row in rows:
         date = row.get("date", "")
@@ -160,37 +138,33 @@ def _get_income_statement(stock_id: str) -> dict:
     if not by_date:
         return {}
 
-    # 取最新一期
     latest_date = sorted(by_date.keys())[-1]
     d = by_date[latest_date]
 
     result = {}
 
-    # 毛利率 = 毛利 / 營收
+    # 毛利率 = GrossProfit / Revenue
     gross_profit = d.get("GrossProfit")
     revenue = d.get("Revenue")
     if gross_profit and revenue and revenue > 0:
         result["gross_margin"] = round(gross_profit / revenue * 100, 2)
 
-    # 淨利率 = 稅後淨利 / 營收
+    # 淨利率 = IncomeAfterTaxes / Revenue
     net_income = d.get("IncomeAfterTaxes")
     if net_income and revenue and revenue > 0:
         result["net_margin"] = round(net_income / revenue * 100, 2)
 
-    # 儲存供 F-Score 使用
     result["net_income"] = net_income
     result["revenue"] = revenue
-
-    # ROE、ROA 需要配合資產負債表計算，這裡先存原始值
-    result["operating_income"] = d.get("OperatingIncome")
 
     return result
 
 
 def _get_balance_sheet(stock_id: str) -> dict:
     """
-    取得資產負債表，計算負債比率與流動比率
-    FinMind 的資產負債表欄位帶有 _per 結尾的是百分比
+    取得資產負債表
+    負債比率用 Liabilities_per（FinMind 直接提供的百分比欄位）
+    流動比率用 CurrentAssets / CurrentLiabilities
     """
     start = (datetime.now() - timedelta(days=365 * 2)).strftime("%Y-%m-%d")
     rows = _finmind_get("TaiwanStockBalanceSheet", stock_id, start_date=start)
@@ -217,57 +191,50 @@ def _get_balance_sheet(stock_id: str) -> dict:
     latest = by_date[dates[-1]]
     prev = by_date[dates[-2]] if len(dates) > 1 else {}
 
-    # FinMind 資產負債表有 _per 欄位（百分比），直接使用更準確
-    # 負債比率：用 TotalLiabilities_per（若有）
-    total_liab_per = latest.get("TotalLiabilities_per")
-    if total_liab_per is not None:
-        result["debt_ratio"] = round(float(total_liab_per), 2)
+    # 負債比率：使用 Liabilities_per（FinMind 直接提供，單位已是 %）
+    liab_per = latest.get("Liabilities_per")
+    if liab_per is not None:
+        result["debt_ratio"] = round(liab_per, 2)
     else:
-        # 手動計算
+        # 備用：手動計算
         total_assets = latest.get("TotalAssets")
-        total_liab = latest.get("TotalLiabilities")
-        if total_assets and total_liab and total_assets > 0:
-            result["debt_ratio"] = round(total_liab / total_assets * 100, 2)
+        liabilities = latest.get("Liabilities")
+        if total_assets and liabilities and total_assets > 0:
+            result["debt_ratio"] = round(liabilities / total_assets * 100, 2)
 
-    # 前期負債比（供 F-Score F4 使用）
-    prev_liab_per = prev.get("TotalLiabilities_per")
+    # 前期負債比（F-Score F4 用）
+    prev_liab_per = prev.get("Liabilities_per")
     if prev_liab_per is not None:
-        result["prev_debt_ratio"] = round(float(prev_liab_per), 2)
+        result["prev_debt_ratio"] = round(prev_liab_per, 2)
     else:
-        prev_assets = prev.get("TotalAssets")
-        prev_liab = prev.get("TotalLiabilities")
-        if prev_assets and prev_liab and prev_assets > 0:
-            result["prev_debt_ratio"] = round(prev_liab / prev_assets * 100, 2)
-        else:
-            result["prev_debt_ratio"] = result.get("debt_ratio", 50)
+        result["prev_debt_ratio"] = result.get("debt_ratio", 50)
 
-    # 流動比率 = 流動資產 / 流動負債
+    # 流動比率 = CurrentAssets / CurrentLiabilities
     current_assets = latest.get("CurrentAssets")
     current_liab = latest.get("CurrentLiabilities")
     if current_assets and current_liab and current_liab > 0:
         result["current_ratio"] = round(current_assets / current_liab, 2)
 
-    # 總資產（供 ROA 計算）
+    # 總資產（供 ROA 計算用）
     result["total_assets"] = latest.get("TotalAssets")
-    result["total_equity"] = latest.get("EquityAttributableToOwnersOfParent") or latest.get("TotalEquity")
 
     return result
 
 
 def _get_cashflow(stock_id: str) -> dict:
     """
-    取得現金流量資料
-    欄位：CashFlowsFromOperatingActivities（營業現金流）
-          PropertyAndPlantAndEquipment（資本支出，負值）
+    取得年度累計現金流量
+    抓兩年資料，取日期最新且月份為 12 月（年報）的那筆
+    避免抓到單季資料導致數字偏低
     """
-    start = (datetime.now() - timedelta(days=365 * 2)).strftime("%Y-%m-%d")
+    start = (datetime.now() - timedelta(days=365 * 3)).strftime("%Y-%m-%d")
     rows = _finmind_get("TaiwanStockCashFlowsStatement", stock_id, start_date=start)
 
     result = {"ocf": None, "fcf": None}
     if not rows:
         return result
 
-    # 依日期分組，取最新一期
+    # 依日期分組
     by_date = {}
     for row in rows:
         date = row.get("date", "")
@@ -278,22 +245,24 @@ def _get_cashflow(stock_id: str) -> dict:
         if v is not None:
             by_date[date][t] = float(v)
 
-    dates = sorted(by_date.keys())
-    if not dates:
+    # 優先取年報（月份為 12 月），其次取最新一筆
+    annual_dates = [d for d in by_date.keys() if d.endswith("-12-31") or d[5:7] == "12"]
+    target_dates = sorted(annual_dates, reverse=True) if annual_dates else sorted(by_date.keys(), reverse=True)
+
+    if not target_dates:
         return result
 
-    latest = by_date[dates[-1]]
+    latest = by_date[target_dates[0]]
 
     # 營業現金流
     ocf = latest.get("CashFlowsFromOperatingActivities") or latest.get("NetCashInflowFromOperatingActivities")
 
-    # 資本支出（購置固定資產，通常為負值）
+    # 資本支出（購置固定資產，為負值）
     capex = latest.get("PropertyAndPlantAndEquipment", 0)
 
     if ocf is not None:
         result["ocf"] = ocf
-        # 自由現金流 = 營業現金流 - 資本支出（capex 是負值所以用加）
-        result["fcf"] = ocf + capex  # capex 本身是負數，所以相加
+        result["fcf"] = ocf + capex  # capex 本身是負數
 
     return result
 
@@ -328,46 +297,32 @@ def _get_revenue_trend(stock_id: str) -> str:
 
 
 def calc_f_score(stock_data: dict, balance_data: dict, cashflow_data: dict, income_data: dict) -> dict:
-    """
-    計算 Piotroski F-Score（9題，滿分9分）
-    """
+    """計算 Piotroski F-Score（9題，滿分9分）"""
     detail = {}
     score = 0
 
-    # 取得各項數值
     ocf = cashflow_data.get("ocf") or 0
     net_income = income_data.get("net_income") or 0
     total_assets = balance_data.get("total_assets") or 1
     debt_ratio = stock_data.get("debt_ratio") or 50
-    prev_debt_ratio = balance_data.get("prev_debt_ratio") or 50
+    prev_debt_ratio = balance_data.get("prev_debt_ratio") or debt_ratio
     current_ratio = stock_data.get("current_ratio") or 0
     gross_margin = stock_data.get("gross_margin") or 0
-    net_margin = stock_data.get("net_margin") or 0
 
     # ROA = 稅後淨利 / 總資產
-    roa = (net_income / total_assets * 100) if total_assets and total_assets > 0 else 0
+    roa = (net_income / total_assets * 100) if total_assets > 0 else 0
 
-    # ── 獲利能力（3題）──
-
-    # F1: ROA > 0（有在賺錢）
+    # F1: ROA > 0
     f1 = roa > 0
-    detail["F1_roa_positive"] = {
-        "question": "今年 ROA > 0（有在賺錢）",
-        "pass": f1,
-        "value": f"{roa:.1f}%"
-    }
+    detail["F1_roa_positive"] = {"question": "今年 ROA > 0（有在賺錢）", "pass": f1, "value": f"{roa:.1f}%"}
     if f1: score += 1
 
     # F2: 營業現金流 > 0
     f2 = ocf > 0
-    detail["F2_ocf_positive"] = {
-        "question": "營業現金流 > 0（現金有進來）",
-        "pass": f2,
-        "value": f"{ocf/1e8:.1f}億"
-    }
+    detail["F2_ocf_positive"] = {"question": "營業現金流 > 0（現金有進來）", "pass": f2, "value": f"{ocf/1e8:.1f}億"}
     if f2: score += 1
 
-    # F3: 營業現金流 > 稅後淨利（獲利品質高）
+    # F3: 現金流 > 淨利
     f3 = ocf > net_income
     detail["F3_accrual"] = {
         "question": "現金流 > 帳面淨利（獲利不是灌水的）",
@@ -375,8 +330,6 @@ def calc_f_score(stock_data: dict, balance_data: dict, cashflow_data: dict, inco
         "value": f"現金流 {ocf/1e8:.1f}億 vs 淨利 {net_income/1e8:.1f}億"
     }
     if f3: score += 1
-
-    # ── 財務結構（3題）──
 
     # F4: 負債比下降
     f4 = debt_ratio < prev_debt_ratio
@@ -389,48 +342,26 @@ def calc_f_score(stock_data: dict, balance_data: dict, cashflow_data: dict, inco
 
     # F5: 流動比率 > 1.5
     f5 = current_ratio > 1.5
-    detail["F5_liquidity"] = {
-        "question": "流動比率 > 1.5（短期償債能力良好）",
-        "pass": f5,
-        "value": f"{current_ratio:.2f}"
-    }
+    detail["F5_liquidity"] = {"question": "流動比率 > 1.5（短期償債能力良好）", "pass": f5, "value": f"{current_ratio:.2f}"}
     if f5: score += 1
 
-    # F6: 沒有大量增發新股（簡化：預設通過）
-    detail["F6_dilution"] = {
-        "question": "沒有大量增發新股（不缺錢）",
-        "pass": True,
-        "value": "需人工確認"
-    }
+    # F6: 沒有大量增發新股
+    detail["F6_dilution"] = {"question": "沒有大量增發新股（不缺錢）", "pass": True, "value": "需人工確認"}
     score += 1
-
-    # ── 營運效率（3題）──
 
     # F7: 毛利率 > 15%
     f7 = gross_margin > 15
-    detail["F7_gross_margin"] = {
-        "question": "毛利率 > 15%（有定價能力）",
-        "pass": f7,
-        "value": f"{gross_margin:.1f}%"
-    }
+    detail["F7_gross_margin"] = {"question": "毛利率 > 15%（有定價能力）", "pass": f7, "value": f"{gross_margin:.1f}%"}
     if f7: score += 1
 
     # F8: ROA > 5%
     f8 = roa > 5
-    detail["F8_asset_turnover"] = {
-        "question": "資產使用效率良好（ROA > 5%）",
-        "pass": f8,
-        "value": f"ROA={roa:.1f}%"
-    }
+    detail["F8_asset_turnover"] = {"question": "資產使用效率良好（ROA > 5%）", "pass": f8, "value": f"ROA={roa:.1f}%"}
     if f8: score += 1
 
     # F9: ROA > 8%
     f9 = roa > 8
-    detail["F9_roa_change"] = {
-        "question": "ROA > 8%（獲利效率優良）",
-        "pass": f9,
-        "value": f"{roa:.1f}%"
-    }
+    detail["F9_roa_change"] = {"question": "ROA > 8%（獲利效率優良）", "pass": f9, "value": f"{roa:.1f}%"}
     if f9: score += 1
 
     return {"total": score, "detail": detail}
