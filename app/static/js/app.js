@@ -21,26 +21,21 @@ async function searchStock() {
 
   currentStockId = input;
 
-  // UI 狀態切換
   show("loading");
   hide("result");
   hide("errorMsg");
 
   try {
     const res = await fetch(`/api/stock/${input}`);
-
     if (!res.ok) {
       const err = await res.json();
       throw new Error(err.detail || `HTTP ${res.status}`);
     }
-
     const data = await res.json();
     renderResult(data);
     show("result");
-
   } catch (err) {
-    document.getElementById("errorMsg").textContent =
-      `❌ 查詢失敗：${err.message}`;
+    document.getElementById("errorMsg").textContent = `❌ 查詢失敗：${err.message}`;
     show("errorMsg");
   } finally {
     hide("loading");
@@ -49,6 +44,8 @@ async function searchStock() {
 
 // ── 渲染分析結果 ──
 function renderResult(d) {
+  const bm = d.benchmark || {};  // 產業基準值
+
   // 公司基本資訊
   setText("companyName", d.company_name || "—");
   setText("stockId", d.stock_id);
@@ -56,17 +53,23 @@ function renderResult(d) {
   setText("price", d.price ? `NT$ ${d.price.toFixed(2)}` : "—");
   setText("marketCap", d.market_cap ? `市值 ${d.market_cap} 億` : "");
 
+  // 產業說明
+  if (bm.note) {
+    setText("industryNote", `📌 ${bm.note}`);
+    show("industryNoteBox");
+  } else {
+    hide("industryNoteBox");
+  }
+
+  // 一句話總結
+  renderSummary(d, bm);
+
   // 七大指標
-  renderMetric("pe", d.pe_ratio, "card-pe", v => v < 15 ? "good" : v > 30 ? "bad" : "ok",
-    v => v ? v.toFixed(1) : "—");
-  renderMetric("pb", d.pb_ratio, "card-pb", v => v < 1.5 ? "good" : v > 3 ? "bad" : "ok",
-    v => v ? v.toFixed(2) : "—");
-  renderMetric("roe", d.roe, "card-roe", v => v > 15 ? "good" : v < 5 ? "bad" : "ok",
-    v => v ? `${v.toFixed(1)}%` : "—");
-  renderMetric("debt", d.debt_ratio, "card-debt", v => v < 40 ? "good" : v > 60 ? "bad" : "ok",
-    v => v ? `${v.toFixed(1)}%` : "—");
-  renderMetric("fcf", d.free_cash_flow, "card-fcf", v => v > 0 ? "good" : "bad",
-    v => v ? `${(v / 1e8).toFixed(1)}億` : "—");
+  renderPE(d.pe_ratio, bm);
+  renderPB(d.pb_ratio, bm);
+  renderROE(d.roe, bm);
+  renderDebt(d.debt_ratio, bm);
+  renderFCF(d.free_cash_flow);
   setText("revTrend", d.revenue_trend || "無資料");
   renderFScoreCard(d.f_score);
 
@@ -74,7 +77,7 @@ function renderResult(d) {
   renderFScoreDetail(d.f_score_detail);
 
   // AI 評語
-  setText("aiComment", d.ai_comment || "（AI 評語載入中或未設定 API Key）");
+  setText("aiComment", d.ai_comment || "（需設定 ANTHROPIC_API_KEY 才能產生 AI 評語）");
 
   // 重置新聞區
   setText("newsArea", "");
@@ -83,27 +86,181 @@ function renderResult(d) {
   newsBtn.textContent = "載入近期新聞";
 }
 
-// ── 渲染單一指標卡 ──
-function renderMetric(elemId, value, cardId, colorFn, formatFn) {
-  const el = document.getElementById(elemId);
-  const card = document.getElementById(cardId);
-  const display = formatFn(value);
-  el.textContent = display;
+// ── 一句話總結 ──
+function renderSummary(d, bm) {
+  const fscore = d.f_score || 0;
+  const pe = d.pe_ratio;
+  const roe = d.roe;
+  const debt = d.debt_ratio;
 
-  if (value !== null && value !== undefined) {
-    const cls = colorFn(value);
-    card.className = `card metric-card ${cls}`;
+  let quality = "";
+  let price = "";
+  let action = "";
+
+  // 體質判斷
+  if (fscore >= 7) quality = "體質優良";
+  else if (fscore >= 4) quality = "體質普通";
+  else quality = "體質較差";
+
+  // 價格判斷
+  const peHigh = bm.pe_high || 25;
+  const peLow = bm.pe_low || 12;
+  if (pe) {
+    if (pe < peLow) price = "價格便宜";
+    else if (pe > peHigh) price = "價格偏貴";
+    else price = "價格合理";
+  } else {
+    price = "價格未知";
+  }
+
+  // 建議動作
+  if (fscore >= 7 && pe && pe < peHigh) action = "✅ 值得深入研究";
+  else if (fscore >= 7 && pe && pe > peHigh) action = "⏳ 好公司但現在偏貴，可以等回檔";
+  else if (fscore < 4) action = "⚠️ 財務體質較弱，建議謹慎";
+  else action = "👀 普通，需要再觀察";
+
+  setText("summaryText", `${quality}・${price}　${action}`);
+}
+
+// ── PE 本益比 ──
+function renderPE(pe, bm) {
+  const el = document.getElementById("pe");
+  const noteEl = document.getElementById("pe-note");
+  const card = document.getElementById("card-pe");
+
+  if (!pe) { el.textContent = "—"; noteEl.textContent = "無資料"; return; }
+
+  el.textContent = pe.toFixed(1);
+  const low = bm.pe_low || 12;
+  const high = bm.pe_high || 25;
+
+  if (pe < low) {
+    card.className = "card metric-card good";
+    noteEl.textContent = `低於${low}，本產業算便宜 👍`;
+  } else if (pe > high) {
+    card.className = "card metric-card bad";
+    noteEl.textContent = `高於${high}，本產業算偏貴 ⚠️`;
+  } else {
+    card.className = "card metric-card ok";
+    noteEl.textContent = `${low}~${high} 之間，本產業算合理`;
+  }
+}
+
+// ── PB 股價淨值比 ──
+function renderPB(pb, bm) {
+  const el = document.getElementById("pb");
+  const noteEl = document.getElementById("pb-note");
+  const card = document.getElementById("card-pb");
+
+  if (!pb) { el.textContent = "—"; noteEl.textContent = "無資料"; return; }
+
+  el.textContent = pb.toFixed(2);
+  const low = bm.pb_low || 1;
+  const high = bm.pb_high || 3;
+
+  if (pb < low) {
+    card.className = "card metric-card good";
+    noteEl.textContent = `低於${low}，股價低於帳面價值，便宜 👍`;
+  } else if (pb > high) {
+    card.className = "card metric-card bad";
+    noteEl.textContent = `高於${high}，市場給了很高溢價，偏貴`;
+  } else {
+    card.className = "card metric-card ok";
+    noteEl.textContent = `本產業正常範圍內`;
+  }
+}
+
+// ── ROE 股東權益報酬率 ──
+function renderROE(roe, bm) {
+  const el = document.getElementById("roe");
+  const noteEl = document.getElementById("roe-note");
+  const card = document.getElementById("card-roe");
+
+  if (!roe) { el.textContent = "—"; noteEl.textContent = "無資料"; return; }
+
+  el.textContent = `${roe.toFixed(1)}%`;
+  const good = bm.roe_good || 15;
+  const min = bm.roe_min || 8;
+
+  if (roe >= good) {
+    card.className = "card metric-card good";
+    noteEl.textContent = `超過${good}%，幫股東賺錢效率很好 👍`;
+  } else if (roe >= min) {
+    card.className = "card metric-card ok";
+    noteEl.textContent = `${min}~${good}% 之間，普通`;
+  } else {
+    card.className = "card metric-card bad";
+    noteEl.textContent = `低於${min}%，賺錢效率偏低 ⚠️`;
+  }
+}
+
+// ── 負債比率 ──
+function renderDebt(debt, bm) {
+  const el = document.getElementById("debt");
+  const noteEl = document.getElementById("debt-note");
+  const card = document.getElementById("card-debt");
+
+  if (!debt) { el.textContent = "—"; noteEl.textContent = "無資料"; return; }
+
+  el.textContent = `${debt.toFixed(1)}%`;
+  const safe = bm.debt_safe || 50;
+  const danger = bm.debt_danger || 65;
+
+  if (debt < safe) {
+    card.className = "card metric-card good";
+    noteEl.textContent = `低於${safe}%，財務很穩健 👍`;
+  } else if (debt > danger) {
+    card.className = "card metric-card bad";
+    noteEl.textContent = `超過${danger}%，負債偏高需注意 ⚠️`;
+  } else {
+    card.className = "card metric-card ok";
+    noteEl.textContent = `本產業正常範圍內`;
+  }
+}
+
+// ── 自由現金流 ──
+function renderFCF(fcf) {
+  const el = document.getElementById("fcf");
+  const noteEl = document.getElementById("fcf-note");
+  const card = document.getElementById("card-fcf");
+
+  if (fcf === null || fcf === undefined) {
+    el.textContent = "—"; noteEl.textContent = "無資料"; return;
+  }
+
+  el.textContent = `${(fcf / 1e8).toFixed(1)}億`;
+
+  if (fcf > 0) {
+    card.className = "card metric-card good";
+    noteEl.textContent = "正值，真的有賺到錢 👍";
+  } else {
+    card.className = "card metric-card bad";
+    noteEl.textContent = "負值，現金在流出，需注意 ⚠️";
   }
 }
 
 // ── F-Score 總分卡片 ──
 function renderFScoreCard(score) {
   const el = document.getElementById("fscore");
+  const noteEl = document.getElementById("fscore-note");
   const card = document.getElementById("card-fscore");
-  el.textContent = score !== null && score !== undefined ? `${score}/9` : "—";
-  if (score >= 7) card.className = "card metric-card good";
-  else if (score >= 4) card.className = "card metric-card ok";
-  else card.className = "card metric-card bad";
+
+  if (score === null || score === undefined) {
+    el.textContent = "—"; return;
+  }
+
+  el.textContent = `${score}/9`;
+
+  if (score >= 7) {
+    card.className = "card metric-card good";
+    noteEl.textContent = "體質優良，財報很健康 👍";
+  } else if (score >= 4) {
+    card.className = "card metric-card ok";
+    noteEl.textContent = "體質普通，有些地方需注意";
+  } else {
+    card.className = "card metric-card bad";
+    noteEl.textContent = "體質較差，建議避開 ⚠️";
+  }
 }
 
 // ── F-Score 九題詳細 ──
