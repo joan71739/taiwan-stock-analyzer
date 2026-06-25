@@ -19,12 +19,7 @@
   <!-- 搜尋區 -->
   <section class="search-section">
     <div class="search-box">
-      <input
-        type="text"
-        id="stockInput"
-        placeholder="輸入股票代碼（例如：2330）"
-        maxlength="6"
-      />
+      <input type="text" id="stockInput" placeholder="輸入股票代碼（例如：2330）" maxlength="6" />
       <button id="searchBtn" onclick="searchStock()">健檢分析</button>
     </div>
     <div class="quick-chips">
@@ -36,7 +31,7 @@
     </div>
   </section>
 
-  <!-- 載入中動畫 -->
+  <!-- 載入中 -->
   <div id="loading" class="loading hidden">
     <div class="spinner"></div>
     <p>正在分析中，請稍候（約 15-30 秒）...</p>
@@ -57,52 +52,63 @@
       </div>
       <div class="price-block">
         <div class="price" id="price">—</div>
-        <div class="mktcap" id="marketCap">市值 — 億</div>
+        <div class="mktcap" id="marketCap"></div>
       </div>
     </section>
+
+    <!-- 產業說明 -->
+    <div id="industryNoteBox" class="industry-note hidden">
+      <span id="industryNote"></span>
+    </div>
+
+    <!-- 一句話總結 -->
+    <div class="summary-box">
+      <span id="summaryText">—</span>
+    </div>
 
     <!-- 七大指標 -->
     <section class="metrics-grid">
       <div class="card metric-card" id="card-pe">
         <div class="metric-label">本益比 PE</div>
         <div class="metric-value" id="pe">—</div>
-        <div class="metric-note">越低越便宜</div>
+        <div class="metric-note" id="pe-note">你付多少錢買 1 元獲利</div>
       </div>
       <div class="card metric-card" id="card-pb">
         <div class="metric-label">股價淨值比 PB</div>
         <div class="metric-value" id="pb">—</div>
-        <div class="metric-note">門檻：&lt; 1.5</div>
+        <div class="metric-note" id="pb-note">股價 vs 公司帳面資產</div>
       </div>
       <div class="card metric-card" id="card-roe">
-        <div class="metric-label">ROE</div>
+        <div class="metric-label">ROE 股東報酬率</div>
         <div class="metric-value" id="roe">—</div>
-        <div class="metric-note">門檻：&gt; 15%</div>
+        <div class="metric-note" id="roe-note">幫股東賺錢的效率</div>
       </div>
       <div class="card metric-card" id="card-debt">
         <div class="metric-label">負債比率</div>
         <div class="metric-value" id="debt">—</div>
-        <div class="metric-note">門檻：&lt; 50%</div>
+        <div class="metric-note" id="debt-note">借了多少錢來經營</div>
       </div>
       <div class="card metric-card" id="card-fcf">
         <div class="metric-label">自由現金流</div>
         <div class="metric-value" id="fcf">—</div>
-        <div class="metric-note">正值為佳</div>
+        <div class="metric-note" id="fcf-note">真正賺進口袋的現金</div>
       </div>
       <div class="card metric-card">
         <div class="metric-label">營收趨勢</div>
         <div class="metric-value" id="revTrend">—</div>
-        <div class="metric-note">近幾年方向</div>
+        <div class="metric-note">近幾年營收方向</div>
       </div>
       <div class="card metric-card" id="card-fscore">
-        <div class="metric-label">F-Score</div>
+        <div class="metric-label">F-Score 財報健康度</div>
         <div class="metric-value" id="fscore">—</div>
-        <div class="metric-note">門檻：≥ 7 分</div>
+        <div class="metric-note" id="fscore-note">9題財報健檢總分</div>
       </div>
     </section>
 
     <!-- F-Score 詳細 -->
     <section class="card">
       <h3>🔬 Piotroski F-Score 逐題分析</h3>
+      <p class="card-desc">用 9 個財報問題幫公司打分，每題 Yes = 1 分。7 分以上代表體質優良。</p>
       <div id="fscoreDetail" class="fscore-list"></div>
     </section>
 
@@ -112,14 +118,14 @@
       <div id="aiComment" class="ai-comment"></div>
     </section>
 
-    <!-- 新聞按鈕 -->
+    <!-- 新聞 -->
     <section class="card">
       <h3>📰 近期新聞</h3>
       <button class="news-btn" id="newsBtn" onclick="loadNews()">載入近期新聞</button>
       <div id="newsArea"></div>
     </section>
 
-    <!-- 關注清單按鈕 -->
+    <!-- 關注清單 -->
     <section class="watchlist-actions">
       <button class="btn-watch" id="watchBtn" onclick="toggleWatchlist()">⭐ 加入關注清單</button>
     </section>
