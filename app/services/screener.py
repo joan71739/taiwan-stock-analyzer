@@ -79,43 +79,50 @@ def fetch_all_stock_ids(market: str = "all") -> list:
 
 def sync_stock_basic_info(db: Session):
     """
-    同步股票基本資料到 DB（stock_basic_info 資料表）
-    改為分批 commit，避免 PostgreSQL 參數數量超限（上限 65535）
+    同步股票基本資料到 DB
+    使用 PostgreSQL 的 INSERT ON CONFLICT DO UPDATE（upsert）
+    避免重複 key 錯誤，可以安全重複執行
     """
+    from sqlalchemy.dialects.postgresql import insert as pg_insert
+
     stocks = fetch_all_stock_ids()
     if not stocks:
         logger.warning("取得股票清單為空，跳過同步")
         return 0
 
-    count = 0
-    BATCH_SIZE = 200  # 每批 200 筆，安全範圍內
+    BATCH_SIZE = 200
+    total_upserted = 0
 
     for i in range(0, len(stocks), BATCH_SIZE):
         batch = stocks[i:i + BATCH_SIZE]
-        for s in batch:
-            existing = db.query(StockBasicInfo).filter(
-                StockBasicInfo.stock_id == s["stock_id"]
-            ).first()
 
-            if existing:
-                existing.company_name = s["company_name"]
-                existing.industry = s["industry"]
-                existing.market = s["market"]
-                existing.updated_at = datetime.utcnow()
-            else:
-                db.add(StockBasicInfo(
-                    stock_id=s["stock_id"],
-                    company_name=s["company_name"],
-                    industry=s["industry"],
-                    market=s["market"]
-                ))
-                count += 1
+        # 組成 upsert 資料列表
+        rows = [{
+            "stock_id": s["stock_id"],
+            "company_name": s["company_name"],
+            "industry": s["industry"],
+            "market": s["market"],
+            "updated_at": datetime.utcnow()
+        } for s in batch]
 
-        db.commit()  # 每 200 筆 commit 一次
+        # INSERT ... ON CONFLICT (stock_id) DO UPDATE
+        stmt = pg_insert(StockBasicInfo).values(rows)
+        stmt = stmt.on_conflict_do_update(
+            index_elements=["stock_id"],
+            set_={
+                "company_name": stmt.excluded.company_name,
+                "industry": stmt.excluded.industry,
+                "market": stmt.excluded.market,
+                "updated_at": stmt.excluded.updated_at,
+            }
+        )
+        db.execute(stmt)
+        db.commit()
+        total_upserted += len(batch)
         logger.info(f"股票清單同步進度：{min(i+BATCH_SIZE, len(stocks))}/{len(stocks)}")
 
-    logger.info(f"股票基本資料同步完成，新增 {count} 筆")
-    return count
+    logger.info(f"股票基本資料同步完成，共處理 {total_upserted} 筆")
+    return total_upserted
 
 
 def run_screener_batch(batch_size: int = 30, offset: int = 0, filters: dict = None) -> dict:
