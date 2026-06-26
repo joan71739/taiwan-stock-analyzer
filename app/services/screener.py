@@ -78,6 +78,10 @@ def fetch_all_stock_ids(market: str = "all") -> list:
 
 
 def sync_stock_basic_info(db: Session):
+    """
+    同步股票基本資料到 DB
+    使用 upsert，可安全重複執行
+    """
     from sqlalchemy.dialects.postgresql import insert as pg_insert
 
     stocks = fetch_all_stock_ids()
@@ -85,12 +89,7 @@ def sync_stock_basic_info(db: Session):
         logger.warning("取得股票清單為空，跳過同步")
         return 0
 
-    # ★ 先清空舊資料，確保 ETF 等過濾掉的股票不殘留
-    db.query(StockBasicInfo).delete()
-    db.commit()
-    logger.info("已清空舊股票清單")
-
-    # 去重
+    # 去重：同一個 stock_id 只保留第一筆
     seen = set()
     unique_stocks = []
     for s in stocks:
@@ -98,7 +97,39 @@ def sync_stock_basic_info(db: Session):
             seen.add(s["stock_id"])
             unique_stocks.append(s)
 
-    # 以下不變...
+    logger.info(f"去重後剩 {len(unique_stocks)} 支（原始 {len(stocks)} 筆）")
+
+    BATCH_SIZE = 200
+    total = 0
+
+    for i in range(0, len(unique_stocks), BATCH_SIZE):
+        batch = unique_stocks[i:i + BATCH_SIZE]
+
+        rows = [{
+            "stock_id": s["stock_id"],
+            "company_name": s["company_name"],
+            "industry": s["industry"],
+            "market": s["market"],
+            "updated_at": datetime.utcnow()
+        } for s in batch]
+
+        stmt = pg_insert(StockBasicInfo).values(rows)
+        stmt = stmt.on_conflict_do_update(
+            index_elements=["stock_id"],
+            set_={
+                "company_name": stmt.excluded.company_name,
+                "industry": stmt.excluded.industry,
+                "market": stmt.excluded.market,
+                "updated_at": stmt.excluded.updated_at,
+            }
+        )
+        db.execute(stmt)
+        db.commit()
+        total += len(batch)
+        logger.info(f"同步進度：{min(i+BATCH_SIZE, len(unique_stocks))}/{len(unique_stocks)}")
+
+    logger.info(f"✅ 股票清單同步完成，共 {total} 筆")
+    return total
 
 
 def run_screener_batch(batch_size: int = 30, offset: int = 0, filters: dict = None) -> dict:
