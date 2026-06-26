@@ -279,3 +279,5 @@ footer {
   .price-block { text-align: left; }
   .metrics-grid { grid-template-columns: repeat(2, 1fr); }
 }
+
+.loading p { white-space: pre-wrap; }
