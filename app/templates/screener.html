@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>基本面篩選器 — 台股價值投資分析</title>
+  <link rel="stylesheet" href="/static/css/style.css" />
+  <link rel="stylesheet" href="/static/css/screener.css" />
+</head>
+<body>
+
+<header>
+  <div class="header-inner">
+    <h1>📊 基本面篩選器</h1>
+    <p class="subtitle">從全台股中找出「體質好 + 價格合理」的公司</p>
+  </div>
+  <nav class="header-nav">
+    <a href="/">🔍 個股健檢</a>
+    <a href="/screener" class="active">📊 篩選器</a>
+  </nav>
+</header>
+
+<main>
+
+  <!-- 篩選條件區 -->
+  <section class="card filter-section">
+    <h3>⚙️ 篩選條件</h3>
+    <div class="filter-grid">
+
+      <div class="filter-item">
+        <label>ROE 最低（%）</label>
+        <input type="number" id="f-roe" value="12" min="0" max="50" step="1" />
+        <span class="filter-hint">股東報酬率，建議 ≥ 12%</span>
+      </div>
+
+      <div class="filter-item">
+        <label>負債比 最高（%）</label>
+        <input type="number" id="f-debt" value="60" min="0" max="100" step="5" />
+        <span class="filter-hint">一般產業建議 ≤ 60%（金融業自動放寬）</span>
+      </div>
+
+      <div class="filter-item">
+        <label>F-Score 最低</label>
+        <input type="number" id="f-fscore" value="6" min="0" max="9" step="1" />
+        <span class="filter-hint">財報健康度，建議 ≥ 6（≥7 更嚴格）</span>
+      </div>
+
+      <div class="filter-item">
+        <label>PB 最高</label>
+        <input type="number" id="f-pb" value="3" min="0" max="20" step="0.5" />
+        <span class="filter-hint">股價淨值比，建議 ≤ 3</span>
+      </div>
+
+      <div class="filter-item filter-check">
+        <label>
+          <input type="checkbox" id="f-fcf" checked />
+          要求自由現金流為正
+        </label>
+        <span class="filter-hint">避免帳面盈利但現金流出的公司</span>
+      </div>
+
+      <div class="filter-item">
+        <label>產業篩選</label>
+        <select id="f-industry">
+          <option value="全部">全部產業</option>
+        </select>
+      </div>
+
+    </div>
+
+    <div class="filter-actions">
+      <button class="btn-primary" onclick="applyFilter()">🔍 套用篩選</button>
+      <button class="btn-ghost" onclick="resetFilter()">重設條件</button>
+      <span class="filter-sort-label">排序依據：</span>
+      <select id="f-sort">
+        <option value="composite_score">綜合評分（推薦）</option>
+        <option value="f_score">F-Score 由高到低</option>
+        <option value="roe">ROE 由高到低</option>
+        <option value="pe_ratio">PE 由低到高</option>
+        <option value="pb_ratio">PB 由低到高</option>
+      </select>
+    </div>
+  </section>
+
+  <!-- 統計資訊列 -->
+  <div class="stats-bar" id="statsBar">
+    <div class="stats-bar-inner">
+      <span id="statCoverage">載入中...</span>
+      <span class="stats-sep">·</span>
+      <span id="statPassed">—</span>
+      <span class="stats-sep">·</span>
+      <span id="statUpdated">—</span>
+      <span class="stats-sep">·</span>
+      <button class="btn-mini" onclick="triggerScan(30)" id="scanBtn">▶ 掃描下一批</button>
+      <button class="btn-mini btn-mini-ghost" onclick="initData()" id="initBtn">🔄 初始化資料</button>
+    </div>
+  </div>
+
+  <!-- 初始化提示（第一次使用） -->
+  <div id="initGuide" class="init-guide hidden">
+    <div class="init-guide-inner">
+      <div class="init-icon">🚀</div>
+      <h3>第一次使用？先初始化資料</h3>
+      <p>系統需要先從 FinMind 下載台股清單，再逐步分析每支股票的財務指標。</p>
+      <p>步驟：<strong>① 點「初始化資料」</strong>（下載股票清單）→ <strong>② 點「掃描下一批」</strong>（開始分析，每次約 30 支）</p>
+      <p class="init-note">每天排程會自動掃描一批，不需要每次手動操作。</p>
+      <button class="btn-primary" onclick="initData()">🔄 初始化資料</button>
+    </div>
+  </div>
+
+  <!-- 載入中 -->
+  <div id="loading" class="loading hidden">
+    <div class="spinner"></div>
+    <p id="loadingMsg">載入篩選結果中...</p>
+  </div>
+
+  <!-- 結果區 -->
+  <section id="resultSection" class="hidden">
+    <div class="result-header">
+      <h3 id="resultTitle">篩選結果</h3>
+      <span id="resultCount" class="result-count"></span>
+    </div>
+
+    <!-- 桌面版表格 -->
+    <div class="table-wrap">
+      <table class="screener-table" id="screenerTable">
+        <thead>
+          <tr>
+            <th>股票</th>
+            <th>產業</th>
+            <th class="num-col sortable" onclick="sortTable('pe_ratio')">PE ↕</th>
+            <th class="num-col sortable" onclick="sortTable('pb_ratio')">PB ↕</th>
+            <th class="num-col sortable" onclick="sortTable('roe')">ROE ↕</th>
+            <th class="num-col">負債比</th>
+            <th class="num-col sortable" onclick="sortTable('f_score')">F-Score ↕</th>
+            <th class="num-col sortable" onclick="sortTable('composite_score')">評分 ↕</th>
+            <th>操作</th>
+          </tr>
+        </thead>
+        <tbody id="screenerBody">
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- 空結果 -->
+  <div id="emptyResult" class="empty-result hidden">
+    <p>😔 目前沒有符合條件的股票</p>
+    <p>可以試試放寬篩選條件，或點「掃描下一批」增加資料量</p>
+  </div>
+
+</main>
+
+<footer>
+  <p>⚠️ 本系統僅供輔助參考，不構成投資建議。投資有風險，請自行判斷。</p>
+</footer>
+
+<script src="/static/js/screener.js"></script>
+</body>
+</html>
