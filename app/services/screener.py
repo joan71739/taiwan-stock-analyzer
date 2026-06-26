@@ -80,8 +80,7 @@ def fetch_all_stock_ids(market: str = "all") -> list:
 def sync_stock_basic_info(db: Session):
     """
     同步股票基本資料到 DB
-    使用 PostgreSQL 的 INSERT ON CONFLICT DO UPDATE（upsert）
-    避免重複 key 錯誤，可以安全重複執行
+    先對來源資料去重，再用 upsert 寫入，可安全重複執行
     """
     from sqlalchemy.dialects.postgresql import insert as pg_insert
 
@@ -90,13 +89,22 @@ def sync_stock_basic_info(db: Session):
         logger.warning("取得股票清單為空，跳過同步")
         return 0
 
+    # ★ 先去重：同一個 stock_id 只保留第一筆
+    seen = set()
+    unique_stocks = []
+    for s in stocks:
+        if s["stock_id"] not in seen:
+            seen.add(s["stock_id"])
+            unique_stocks.append(s)
+
+    logger.info(f"去重後剩 {len(unique_stocks)} 支（原始 {len(stocks)} 筆）")
+
     BATCH_SIZE = 200
-    total_upserted = 0
+    total = 0
 
-    for i in range(0, len(stocks), BATCH_SIZE):
-        batch = stocks[i:i + BATCH_SIZE]
+    for i in range(0, len(unique_stocks), BATCH_SIZE):
+        batch = unique_stocks[i:i + BATCH_SIZE]
 
-        # 組成 upsert 資料列表
         rows = [{
             "stock_id": s["stock_id"],
             "company_name": s["company_name"],
@@ -105,7 +113,6 @@ def sync_stock_basic_info(db: Session):
             "updated_at": datetime.utcnow()
         } for s in batch]
 
-        # INSERT ... ON CONFLICT (stock_id) DO UPDATE
         stmt = pg_insert(StockBasicInfo).values(rows)
         stmt = stmt.on_conflict_do_update(
             index_elements=["stock_id"],
@@ -118,11 +125,11 @@ def sync_stock_basic_info(db: Session):
         )
         db.execute(stmt)
         db.commit()
-        total_upserted += len(batch)
-        logger.info(f"股票清單同步進度：{min(i+BATCH_SIZE, len(stocks))}/{len(stocks)}")
+        total += len(batch)
+        logger.info(f"同步進度：{min(i+BATCH_SIZE, len(unique_stocks))}/{len(unique_stocks)}")
 
-    logger.info(f"股票基本資料同步完成，共處理 {total_upserted} 筆")
-    return total_upserted
+    logger.info(f"✅ 股票清單同步完成，共 {total} 筆")
+    return total
 
 
 def run_screener_batch(batch_size: int = 30, offset: int = 0, filters: dict = None) -> dict:
