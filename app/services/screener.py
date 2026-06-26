@@ -61,7 +61,7 @@ def fetch_all_stock_ids(market: str = "all") -> list:
         for s in stocks:
             sid = str(s.get("stock_id", ""))
             # 一般股票：4位數字；部分上櫃5碼開頭是數字
-            if sid.isdigit() and 4 <= len(sid) <= 5:
+            if sid.isdigit() and 4 <= len(sid) <= 5 and not sid.startswith("00"):
                 filtered.append({
                     "stock_id": sid,
                     "company_name": s.get("stock_name", ""),
