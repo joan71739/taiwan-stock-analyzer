@@ -1,7 +1,14 @@
 # app/main.py
 # FastAPI 主程式
+# Phase 2 新增：
+#   - /screener 篩選器頁面
+#   - /api/screener 取得篩選結果 API
+#   - /api/screener/trigger 手動觸發篩選
+#   - /api/screener/stats 篩選統計資訊
+#   - /api/stocks/list 取得全台股清單（供篩選器 dropdown 用）
+#   - APScheduler 啟動/停止
 
-from fastapi import FastAPI, HTTPException, Depends
+from fastapi import FastAPI, HTTPException, Depends, Query
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from fastapi.requests import Request
@@ -11,15 +18,23 @@ from datetime import datetime
 import logging
 import os
 
-from app.models.database import get_db, init_db, StockMetrics, StockNews, WatchList, IndustryBenchmark
+from app.models.database import (
+    get_db, init_db,
+    StockMetrics, StockNews, WatchList, IndustryBenchmark, StockBasicInfo
+)
 from app.services.stock_fetcher import get_stock_data
 from app.services.ai_analyzer import generate_stock_comment
 from app.services.news_fetcher import fetch_google_news, fetch_mops_announcements
+# Phase 2 新增
+from app.services.screener import (
+    get_screener_results, get_screener_stats, sync_stock_basic_info
+)
+from app.services.scheduler import start_scheduler, stop_scheduler, trigger_screener_now
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="台股價值投資分析系統", version="1.0.0")
+app = FastAPI(title="台股價值投資分析系統", version="2.0.0")
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
 templates = Jinja2Templates(directory="app/templates")
 
@@ -27,20 +42,40 @@ templates = Jinja2Templates(directory="app/templates")
 @app.on_event("startup")
 async def startup_event():
     init_db()
-    logger.info("🚀 台股分析系統啟動完成")
+    start_scheduler()   # Phase 2：啟動定時篩選任務
+    logger.info("🚀 台股分析系統啟動完成（Phase 2 篩選器已啟用）")
 
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    stop_scheduler()
+
+
+# ══════════════════════════════════════════
+# 頁面路由
+# ══════════════════════════════════════════
 
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
+    """個股健檢頁面（Phase 1）"""
     return templates.TemplateResponse("index.html", {"request": request})
 
+
+@app.get("/screener", response_class=HTMLResponse)
+async def screener_page(request: Request):
+    """基本面篩選器頁面（Phase 2）"""
+    return templates.TemplateResponse("screener.html", {"request": request})
+
+
+# ══════════════════════════════════════════
+# Phase 1：個股查詢 API（維持不變）
+# ══════════════════════════════════════════
 
 @app.get("/api/stock/{stock_id}")
 async def get_stock_analysis(stock_id: str, db: Session = Depends(get_db)):
     """取得個股完整健檢報告（含產業基準值）"""
     logger.info(f"開始分析股票: {stock_id}")
 
-    # 先查今日快取
     today = datetime.now().date()
     cached = db.query(StockMetrics).filter(
         StockMetrics.stock_id == stock_id,
@@ -50,20 +85,16 @@ async def get_stock_analysis(stock_id: str, db: Session = Depends(get_db)):
     if cached:
         logger.info(f"使用快取資料: {stock_id}")
         result = _format_metrics_response(cached)
-        # 快取也要附上產業基準值
         result["benchmark"] = _get_benchmark(db, cached.stock_id)
         return result
 
-    # 即時爬取
     stock_data = get_stock_data(stock_id)
     if not stock_data:
         raise HTTPException(status_code=404, detail=f"找不到股票代碼 {stock_id}，請確認代碼是否正確")
 
-    # AI 評語
     ai_comment = generate_stock_comment(stock_data)
     stock_data["ai_comment"] = ai_comment
 
-    # 存入資料庫
     metrics = StockMetrics(
         stock_id=stock_id,
         date=datetime.now(),
@@ -86,7 +117,6 @@ async def get_stock_analysis(stock_id: str, db: Session = Depends(get_db)):
     db.add(metrics)
     db.commit()
 
-    # 取得產業基準值
     industry = stock_data.get("industry", "其他")
     benchmark = _get_benchmark_by_industry(db, industry)
 
@@ -109,7 +139,7 @@ async def get_stock_analysis(stock_id: str, db: Session = Depends(get_db)):
         "f_score": stock_data.get("f_score"),
         "f_score_detail": stock_data.get("f_score_detail"),
         "ai_comment": ai_comment,
-        "benchmark": benchmark,  # 產業基準值
+        "benchmark": benchmark,
         "updated_at": datetime.now().isoformat()
     }
 
@@ -149,6 +179,82 @@ async def get_stock_news(stock_id: str, db: Session = Depends(get_db)):
     return {"news": all_news[:30]}
 
 
+# ══════════════════════════════════════════
+# Phase 2：篩選器 API
+# ══════════════════════════════════════════
+
+@app.get("/api/screener")
+async def get_screener(
+    passed_only: bool = Query(True, description="只顯示通過篩選的股票"),
+    industry: str = Query("全部", description="篩選特定產業"),
+    sort_by: str = Query("composite_score", description="排序依據：composite_score/f_score/roe/pe_ratio/pb_ratio"),
+    limit: int = Query(100, description="回傳筆數上限"),
+    db: Session = Depends(get_db)
+):
+    """
+    取得基本面篩選結果
+    資料來自 screener_result 快取表（由每日排程更新）
+    """
+    results = get_screener_results(db, passed_only=passed_only, industry=industry, sort_by=sort_by, limit=limit)
+    stats = get_screener_stats(db)
+
+    # 取得所有產業列表（供前端 dropdown 用）
+    industries = db.query(StockBasicInfo.industry).distinct().order_by(StockBasicInfo.industry).all()
+    industry_list = ["全部"] + [i[0] for i in industries if i[0]]
+
+    return {
+        "results": results,
+        "stats": stats,
+        "industries": industry_list,
+        "filters_applied": {
+            "passed_only": passed_only,
+            "industry": industry,
+            "sort_by": sort_by,
+        }
+    }
+
+
+@app.post("/api/screener/trigger")
+async def trigger_screener(batch_size: int = Query(30, description="本次處理幾支股票（建議 20-50）")):
+    """
+    手動觸發一批股票篩選
+    第一次使用時請先呼叫這個 API 讓系統開始跑資料
+    每次約需 30-60 秒（依 batch_size 而定）
+    """
+    logger.info(f"手動觸發篩選，batch_size={batch_size}")
+    result = trigger_screener_now(batch_size=batch_size)
+    return {
+        "message": f"篩選完成：處理 {result['processed']} 支，通過 {result['passed']} 支",
+        **result
+    }
+
+
+@app.post("/api/screener/sync-stocks")
+async def sync_stocks(db: Session = Depends(get_db)):
+    """
+    同步台股基本資料清單（stock_basic_info 表）
+    第一次使用時必須先跑這個，否則篩選器沒有股票清單
+    約需 10-30 秒
+    """
+    count = sync_stock_basic_info(db)
+    total = db.query(StockBasicInfo).count()
+    return {
+        "message": f"同步完成，新增 {count} 筆，資料庫共 {total} 支股票"
+    }
+
+
+@app.get("/api/screener/stats")
+async def screener_stats(db: Session = Depends(get_db)):
+    """取得篩選器統計資訊"""
+    stats = get_screener_stats(db)
+    total_stocks = db.query(StockBasicInfo).count()
+    return {**stats, "total_stocks_in_db": total_stocks}
+
+
+# ══════════════════════════════════════════
+# 關注清單 API（維持不變）
+# ══════════════════════════════════════════
+
 @app.get("/api/watchlist")
 async def get_watchlist(db: Session = Depends(get_db)):
     items = db.query(WatchList).order_by(WatchList.added_at.desc()).all()
@@ -178,13 +284,14 @@ async def remove_from_watchlist(stock_id: str, db: Session = Depends(get_db)):
 
 @app.get("/api/health")
 async def health_check():
-    return {"status": "ok", "timestamp": datetime.now().isoformat()}
+    return {"status": "ok", "version": "2.0.0", "timestamp": datetime.now().isoformat()}
 
 
-# ── 輔助函式 ──
+# ══════════════════════════════════════════
+# 輔助函式
+# ══════════════════════════════════════════
 
 def _get_benchmark_by_industry(db: Session, industry: str) -> dict:
-    """從 DB 取得產業基準值，找不到則用「其他」"""
     bm = db.query(IndustryBenchmark).filter(IndustryBenchmark.industry == industry).first()
     if not bm:
         bm = db.query(IndustryBenchmark).filter(IndustryBenchmark.industry == "其他").first()
@@ -200,8 +307,6 @@ def _get_benchmark_by_industry(db: Session, industry: str) -> dict:
 
 
 def _get_benchmark(db: Session, stock_id: str) -> dict:
-    """從快取的 stock_id 查產業基準值（需要先查產業別）"""
-    # 簡化：直接回傳空，快取的資料下次查詢時會重新帶入
     return {}
 
 
