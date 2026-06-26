@@ -1,5 +1,6 @@
 # app/models/database.py
 # 資料庫連線設定與資料表定義
+# Phase 2 新增：ScreenerResult（篩選結果快取表）
 
 import os
 from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, Boolean, Text, JSON
@@ -85,33 +86,61 @@ class IndustryBenchmark(Base):
     """
     產業基準值資料表
     儲存各產業的財務指標正常範圍，供比較判斷用
-    之後想調整門檻，直接修改 DB 即可，不需要改程式碼
     """
     __tablename__ = "industry_benchmark"
 
     id = Column(Integer, primary_key=True, index=True)
-    industry = Column(String(100), unique=True, index=True)  # 產業名稱
+    industry = Column(String(100), unique=True, index=True)
 
-    # 本益比正常範圍
-    pe_low = Column(Float)   # PE 低於此值 = 便宜
-    pe_high = Column(Float)  # PE 高於此值 = 偏貴
-
-    # 股價淨值比正常範圍
+    pe_low = Column(Float)
+    pe_high = Column(Float)
     pb_low = Column(Float)
     pb_high = Column(Float)
-
-    # ROE 門檻
-    roe_good = Column(Float)   # ROE 高於此值 = 良好
-    roe_min = Column(Float)    # ROE 低於此值 = 偏低
-
-    # 負債比警戒線
-    debt_safe = Column(Float)    # 負債比低於此值 = 安全
-    debt_danger = Column(Float)  # 負債比高於此值 = 危險
-
-    # 產業說明（白話文）
+    roe_good = Column(Float)
+    roe_min = Column(Float)
+    debt_safe = Column(Float)
+    debt_danger = Column(Float)
     note = Column(Text)
 
     updated_at = Column(DateTime, default=datetime.utcnow)
+
+
+# ══════════════════════════════════════════
+# Phase 2 新增：篩選結果快取表
+# ══════════════════════════════════════════
+class ScreenerResult(Base):
+    """
+    基本面篩選結果快取表
+    每次批次篩選後，把每支股票的結果存進來
+    前端查詢時直接讀這張表，速度極快
+    """
+    __tablename__ = "screener_result"
+
+    id = Column(Integer, primary_key=True, index=True)
+    stock_id = Column(String(10), unique=True, index=True)  # 每支股票只有一筆
+    company_name = Column(String(100))
+    industry = Column(String(50))
+    market = Column(String(20))            # TWSE（上市）/ TPEx（上櫃）
+
+    # 是否通過篩選
+    passed = Column(Boolean, default=False, index=True)
+    # 未通過的原因（多個原因用 | 分隔，例如 "ROE=8%低於門檻|F-Score=5低於門檻"）
+    fail_reasons = Column(Text)
+
+    # 各項指標數值（快取，供前端排序與顯示用）
+    price = Column(Float)
+    pe_ratio = Column(Float)
+    pb_ratio = Column(Float)
+    roe = Column(Float)
+    debt_ratio = Column(Float)
+    f_score = Column(Integer)
+    free_cash_flow = Column(Float)
+    revenue_trend = Column(String(50))
+
+    # 綜合評分（加權計算，用於預設排序）
+    composite_score = Column(Float, index=True)
+
+    updated_at = Column(DateTime, default=datetime.utcnow, index=True)
 
 
 def get_db():
@@ -124,9 +153,9 @@ def get_db():
 
 
 def init_db():
-    """初始化資料庫，建立所有資料表"""
+    """初始化資料庫，建立所有資料表（包含 Phase 2 新增的表）"""
     Base.metadata.create_all(bind=engine)
-    print("✅ 資料庫初始化完成")
+    print("✅ 資料庫初始化完成（含 Phase 2 screener_result 表）")
     _seed_industry_benchmarks()
 
 
@@ -137,7 +166,6 @@ def _seed_industry_benchmarks():
     """
     db = SessionLocal()
     try:
-        # 如果已經有資料，跳過
         if db.query(IndustryBenchmark).count() > 0:
             return
 
