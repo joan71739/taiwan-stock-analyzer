@@ -80,7 +80,7 @@ def fetch_all_stock_ids(market: str = "all") -> list:
 def sync_stock_basic_info(db: Session):
     """
     同步股票基本資料到 DB（stock_basic_info 資料表）
-    讓後續篩選可以直接從 DB 查公司名稱、產業
+    改為分批 commit，避免 PostgreSQL 參數數量超限（上限 65535）
     """
     stocks = fetch_all_stock_ids()
     if not stocks:
@@ -88,27 +88,32 @@ def sync_stock_basic_info(db: Session):
         return 0
 
     count = 0
-    for s in stocks:
-        existing = db.query(StockBasicInfo).filter(
-            StockBasicInfo.stock_id == s["stock_id"]
-        ).first()
+    BATCH_SIZE = 200  # 每批 200 筆，安全範圍內
 
-        if existing:
-            # 更新產業別（可能變動）
-            existing.company_name = s["company_name"]
-            existing.industry = s["industry"]
-            existing.market = s["market"]
-            existing.updated_at = datetime.utcnow()
-        else:
-            db.add(StockBasicInfo(
-                stock_id=s["stock_id"],
-                company_name=s["company_name"],
-                industry=s["industry"],
-                market=s["market"]
-            ))
-            count += 1
+    for i in range(0, len(stocks), BATCH_SIZE):
+        batch = stocks[i:i + BATCH_SIZE]
+        for s in batch:
+            existing = db.query(StockBasicInfo).filter(
+                StockBasicInfo.stock_id == s["stock_id"]
+            ).first()
 
-    db.commit()
+            if existing:
+                existing.company_name = s["company_name"]
+                existing.industry = s["industry"]
+                existing.market = s["market"]
+                existing.updated_at = datetime.utcnow()
+            else:
+                db.add(StockBasicInfo(
+                    stock_id=s["stock_id"],
+                    company_name=s["company_name"],
+                    industry=s["industry"],
+                    market=s["market"]
+                ))
+                count += 1
+
+        db.commit()  # 每 200 筆 commit 一次
+        logger.info(f"股票清單同步進度：{min(i+BATCH_SIZE, len(stocks))}/{len(stocks)}")
+
     logger.info(f"股票基本資料同步完成，新增 {count} 筆")
     return count
 
